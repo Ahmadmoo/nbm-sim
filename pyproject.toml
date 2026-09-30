@@ -10,8 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Ahmad Moori" }]
 # isaacsim / isaaclab / pxr / torch come from the Isaac Lab Python environment and are not listed.
-# numpy is capped to stay compatible with Isaac Sim 5.x.
-dependencies = ["numpy<2", "h5py", "scipy", "pillow"]
+# Install with --no-deps inside Isaac so its own numpy (1.x on Sim 5.1, 2.x on Sim 6.1) is kept.
+dependencies = ["numpy", "h5py", "scipy", "pillow"]
 
 [project.optional-dependencies]
 evis = ["dvs_gen @ git+https://github.com/spikelab-jhu/isaac-sim-event-camera-plugin@d6fe47923fad09c4bfa2fd2cb13f82520114cfae"]

@@ -13,19 +13,29 @@ Implements the first deliverable of `NBM_Simulation_Specification.md` v1.1 (mile
 
 ---
 
-## 1. Tested software pair
+## 1. Supported software
 
-| Component | Version |
-|---|---|
-| Isaac Sim | 5.1 |
-| Isaac Lab | 2.3.x |
-| EVIS (`dvs_gen`) | commit `d6fe479` (2026-07-10) |
-| Python | the Isaac Sim Python (3.11) |
+| Isaac Sim | Isaac Lab | EVIS (`dvs_gen`) | numpy |
+|---|---|---|---|
+| **6.1.0** | **v3.0.0-EA** | commit `d6fe479` (2026-07-10) | 2.x |
+| 5.1 | 2.3.x | commit `d6fe479` | 1.x |
 
-EVIS is written against Isaac Lab 2.x: the `HdrColor` annotator, torch outputs, and `(w, x, y, z)` quaternions.
-Isaac Lab 3.0 renames the HDR channel to `rgb_hdr`, returns `ProxyArray` buffers, and uses `(x, y, z, w)`.
-The adapter maps these differences explicitly. It refuses to run on any version other than 2.3.x unless you set
-`allow_untested_isaac=True`. Do not upgrade a working installation for this package.
+The code checks the installed Isaac Lab version and picks the matching path. Any other release line is
+refused unless you set `allow_untested_isaac=True`.
+
+| Item | Isaac Lab 2.3 / Sim 5.1 | Isaac Lab 3.0 / Sim 6.1 |
+|---|---|---|
+| Quaternion order at the API | `(w, x, y, z)` | `(x, y, z, w)` |
+| HDR input for events | `HdrColor` annotator | `rgb_hdr` (same HdrColor AOV, 3 ch float32) |
+| Sensor buffers | torch tensors | `ProxyArray`, read with `.torch` |
+| Renderer settings | replicator + `carb` | `IsaacRtxRendererCfg(global_settings=...)` |
+| Deterministic rendering | not applied | `apply_isaac_rtx_determinism_settings()` when `rtx_deterministic=True` (default) |
+| GUI | `headless=False` | `headless=False` + `visualizer=["kit"]` |
+| Scene partitioning | n/a | off (`enable_scene_partitioning=False`); the scene is not under `/World/envs` |
+
+Only EVIS's pure core is used: `dvs_gen.dvs.BatchedMultiCamProcessor` and `dvs_gen.warp.bidir_warp_gap`.
+Its Isaac-side wrapper, `DVSCamera`, is not used. That wrapper expects Isaac Lab 2.x (`HdrColor`, torch outputs).
+The pure core has no Isaac dependency and passes the test suite under numpy 2.
 
 ---
 
@@ -35,7 +45,7 @@ The adapter maps these differences explicitly. It refuses to run on any version 
 # inside the Isaac Lab Python environment (replace `python` with `${ISAACLAB}/isaaclab.sh -p` if needed)
 git clone https://github.com/spikelab-jhu/isaac-sim-event-camera-plugin evis
 git -C evis checkout d6fe47923fad09c4bfa2fd2cb13f82520114cfae
-python -m pip install --no-deps -e evis          # --no-deps keeps Isaac's numpy/torch
+python -m pip install --no-deps -e evis          # --no-deps: EVIS pins numpy<2, Isaac Sim 6.1 uses numpy 2
 python -m pip install --no-deps -e .
 python -m pip install h5py scipy pillow pytest   # usually already present
 ```
@@ -55,7 +65,7 @@ No network access is needed at run time. Scene assets (texture PNG, USD) are gen
 
 Steps 2 and 3 write `acceptance/acceptance_*.json`. They need separate processes because each builds one scene.
 
-- **Stale frames.** If step 2 reports `latency.stale = true`, increase `renders_per_capture` and rerun. Never relabel old buffers.
+- **Stale frames.** If step 2 reports `latency.stale = true`, increase `renders_per_capture` and rerun. Each extra render advances the render generation, so the camera pumps the renderer again. Never relabel old buffers.
 - **Static false events.** If step 3 fails its static-scene check, look at the renderer settings reported in `describe.backend.render_settings`. Do not filter the events.
 - **GUI vs headless.** Run `experiment.py` once with each setting, then call `recording.compare_episodes(run_a, run_b)`.
 
@@ -105,7 +115,7 @@ Packet fields follow spec §11.2. Arrays are read-only copies. `actor_view` remo
 | Command | Body twist `[vx, vy, vz, wx, wy, wz]` in the optical frame, m/s and rad/s |
 | Integration | `T ← T · Exp(dt · ξ)` per 1 ms base tick |
 | Intrinsics | Pixel-center convention, `cx = (W−1)/2`. Isaac stores `W/2` (edge convention); the adapter converts |
-| USD camera | `R_gl = R_wc · diag(1, −1, −1)`, set with `convention="opengl"` and checked by reading back `quat_w_ros` |
+| USD camera | `R_gl = R_wc · diag(1, −1, −1)`, set with `convention="opengl"` and checked by reading back `quat_w_ros`. On 3.0 the readback is written through by `set_world_poses`, so it checks the conversion math only; the latency check in `acceptance_plane.py` checks what was rendered |
 | Depth | `distance_to_image_plane`; invalid values → `NaN`, `depth_valid = False` |
 
 **Acceleration limits** act on world-frame velocity between tick endpoints. Inside a tick the body twist is
@@ -126,7 +136,7 @@ and writes them to every manifest.
 
 | Item | Behavior |
 |---|---|
-| Brightness | `I = 0.2126 R + 0.7152 G + 0.0722 B` on linear `HdrColor` |
+| Brightness | `I = 0.2126 R + 0.7152 G + 0.0722 B` on the linear HDR buffer |
 | Log | `log(I + 1e-5)` |
 | Firing | `Δlog I ≥ C` → +1, `≤ −C` → −1 |
 | Reference update | Set to the **current** `log I` (not `ref ± C`) where the pixel fired |
@@ -171,7 +181,8 @@ the real keyframe at the end of each gap, so events never cross packet boundarie
 
 | Item | State |
 |---|---|
-| Isaac-side code | Written against the Isaac Lab 2.3.2 and EVIS sources; not yet executed |
+| Isaac-side code | Written against the Isaac Lab v3.0.0-EA, 2.3.2 and EVIS sources; not yet executed |
+| Render mode on 3.0 | `rtx_deterministic=True` selects RealTimePathTracing with caches off. If the static-scene check shows noise events, set it to `False` or tune `rtx_global_settings` |
 | Render settings | Motion blur, DOF and auto-exposure keys are set through `carb`; the read-back values go to the manifest. Key names depend on the renderer version |
 | Colliders | Analytic axis-aligned boxes only. Mesh assets (e.g. ficus) need a collider path before use |
 | Renderer history | Not part of `get_state()`; a restore re-renders from the restored pose |

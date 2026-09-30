@@ -76,6 +76,8 @@ class SimConfig:
         "/rtx/post/dof/enabled": False,
         "/rtx/post/histogram/enabled": False,
     })
+    rtx_deterministic: bool = True                # Isaac Lab 3.x: apply_isaac_rtx_determinism_settings()
+    rtx_global_settings: dict = field(default_factory=dict)   # Isaac Lab 3.x: IsaacRtxRendererGlobalSettingsCfg fields
     isaac_quat_order: str = "auto"                # "auto", "wxyz" (Isaac Lab 2.x), "xyzw" (3.x)
     allow_untested_isaac: bool = False
     pose_readback_tol: float = 1e-4
