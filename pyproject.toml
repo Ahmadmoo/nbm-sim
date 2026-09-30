@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nbm_sim"
+version = "0.1.0"
+description = "Camera-only Isaac Sim environment for Next Best Motion in event-based 3D reconstruction"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Ahmad Moori" }]
+# isaacsim / isaaclab / pxr / torch come from the Isaac Lab Python environment and are not listed.
+# numpy is capped to stay compatible with Isaac Sim 5.x.
+dependencies = ["numpy<2", "h5py", "scipy", "pillow"]
+
+[project.optional-dependencies]
+evis = ["dvs_gen @ git+https://github.com/spikelab-jhu/isaac-sim-event-camera-plugin@d6fe47923fad09c4bfa2fd2cb13f82520114cfae"]
+preview = ["opencv-python<4.11"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["nbm_sim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["tests/isaac"]
