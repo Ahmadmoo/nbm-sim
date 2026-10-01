@@ -31,6 +31,7 @@ class PlaneBackend:
         depth = np.where(hit, s, np.nan).astype(np.float32)
         out["depth"], out["depth_valid"], out["mask"] = depth, hit, hit
         out["depth_t"] = torch.tensor(np.nan_to_num(depth, nan=1e4)[None])
+        out["mv"] = torch.zeros((1, self.cfg.height, self.cfg.width, 2))   # scheduling tests only
         return out
 
     def describe(self):

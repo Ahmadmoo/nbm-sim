@@ -14,8 +14,10 @@ _BASE = {"schema_version", "episode_id", "step_index", "phase", "t_start", "t_en
 PROTOCOL_FIELDS = {
     "events_only": _BASE,
     "events_rgb_known_pose": _BASE | {"rgb", "rgb_t", "rgb_T_wc"},
-    "events_rgbd_known_pose": _BASE | {"rgb", "rgb_t", "rgb_T_wc", "depth_observed", "depth_observed_t"},
-    "oracle": _BASE | {"rgb", "rgb_t", "rgb_T_wc", "intensity", "depth_observed", "depth_observed_t"},
+    "events_rgbd_known_pose": _BASE | {"rgb", "rgb_t", "rgb_T_wc", "depth_observed", "depth_observed_t",
+                                       "depth_observed_T_wc"},
+    "oracle": _BASE | {"rgb", "rgb_t", "rgb_T_wc", "intensity", "depth_observed", "depth_observed_t",
+                       "depth_observed_T_wc"},
 }
 
 
@@ -71,6 +73,12 @@ def validate_packet(p, width, height):
             err.append("rgb dtype/shape")
         if p["rgb_t"].shape != (M,) or p["rgb_T_wc"].shape != (M, 4, 4):
             err.append("rgb_t/rgb_T_wc shapes")
+    if "depth_observed" in p:
+        M = p["depth_observed"].shape[0]
+        if p["depth_observed"].dtype != np.float32 or p["depth_observed"].shape[1:] != (height, width):
+            err.append("depth_observed dtype/shape")
+        if p["depth_observed_t"].shape != (M,) or p["depth_observed_T_wc"].shape != (M, 4, 4):
+            err.append("depth_observed_t/depth_observed_T_wc shapes")
     if p["K"].shape != (3, 3) or list(p["image_size"]) != [width, height]:
         err.append("K/image_size")
     return err

@@ -90,15 +90,25 @@ env.close()
 
 | Call | Purpose |
 |---|---|
-| `env.run_bootstrap(schedule)` | Saved twist schedule before planning; counts toward acquisition cost, not `max_steps` |
+| `env.run_bootstrap(schedule)` | Saved twist schedule before planning; counts toward acquisition cost, not `max_steps` or the horizon. Only allowed before the first policy step |
+| `env.save_episode()` / `env.end_episode()` | End the episode, with or without writing it. Needed before `set_timing` |
 | `env.camera_state()` | Known pose, world velocity, path cost, declared target-center prior |
 | `env.get_evaluation_state()` | Evaluator-only GT depth/mask and reference geometry |
 | `env.get_state()` / `env.set_state(s)` | Pose, controller, clock, EVIS reference, RNG. Renderer history is not captured |
-| `env.set_timing(**kw)` | Change clock/limits between episodes |
+| `env.set_timing(**kw)` | Change clock/limits between episodes (after `save_episode` / `end_episode` or a terminal step) |
 | `baselines.FixedOrbit / FixedScan / BoundedRandom` | `act(map_state, uncertainty, observation_history, camera_state)` |
 | `recording.load_episode / iter_packets / rerun / compare_episodes / write_preview` | Replay without and with re-rendering |
 | `evaluation.reconstruction_metrics` | Target-only accuracy, completeness, P/R/F at 2/5/10 mm |
 | `interfaces.Reconstructor / UncertaintyModel / Planner / EventPredictor` | Protocols for research modules |
+
+A policy step that would run past `horizon_seconds` stops at the remaining budget, then reports
+`truncated=True` and `diagnostics["budget_clipped"]=True`.
+
+With `observation_protocol="events_rgbd_known_pose"` (or `"oracle"`) and `depth_observation_source="simulator"`,
+packets carry `depth_observed`, `depth_observed_t` and `depth_observed_T_wc`. This simulated depth sensor sits at the
+event-camera pose, runs at `depth_dt`, and adds declared noise `std = depth_noise_std_at_1m * Z²` plus pixel
+dropout `depth_dropout`. Missing pixels are `NaN`. The noise comes from its own seeded stream. The channel is kept
+separate from the evaluator's GT depth.
 
 Packet fields follow spec §11.2. Arrays are read-only copies. `actor_view` removes fields the selected
 `observation_protocol` does not allow. GT depth, masks and meshes never enter a packet.
@@ -186,6 +196,7 @@ the real keyframe at the end of each gap, so events never cross packet boundarie
 | Render settings | Motion blur, DOF and auto-exposure keys are set through `carb`; the read-back values go to the manifest. Key names depend on the renderer version |
 | Colliders | Analytic axis-aligned boxes only. Mesh assets (e.g. ficus) need a collider path before use |
 | Renderer history | Not part of `get_state()`; a restore re-renders from the restored pose |
-| Accelerated mode | Implemented, not validated against reference mode |
+| Accelerated mode | Implemented, not validated against reference mode. `action_dt`, `horizon_seconds`, `bootstrap_seconds` and every step duration must be multiples of `keyframe_dt` (default 10 ms), so packet boundaries are keyframes. An emergency stop between keyframes closes the open gap with a keyframe at the stop pose |
+| Depth sensor model | `depth_observed` noise/dropout is a simple declared model, not a calibrated sensor |
 | Noise | Off by default. `get_state()` with noise enabled deep-copies the noise model's torch generator, which is untested |
 | `num_envs` | 1 |

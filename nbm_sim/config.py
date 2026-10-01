@@ -32,7 +32,7 @@ class SimConfig:
     action_dt: float = 0.05
     rgb_dt: float = 0.05
     depth_dt: float = 0.05
-    keyframe_dt: float = 0.008                    # accelerated mode only
+    keyframe_dt: float = 0.010                    # accelerated mode only; must divide action_dt
 
     event_backend: str = "evis"
     event_mode: str = "reference"
@@ -57,7 +57,9 @@ class SimConfig:
     max_steps: int = 200
 
     observation_protocol: str = "events_rgb_known_pose"
-    depth_observation_source: str = "none"
+    depth_observation_source: str = "none"        # "none" or "simulator" (co-located depth sensor at depth_dt)
+    depth_noise_std_at_1m: float = 0.0            # depth_observed noise std = k * Z^2 (m); 0 = exact
+    depth_dropout: float = 0.0                    # probability a valid depth_observed pixel is reported missing
     expose_intensity: bool = False
 
     display: bool = True
@@ -101,20 +103,34 @@ class SimConfig:
             raise NotImplementedError("first deliverable supports num_envs=1")
         if not (0 < self.width <= 65535 and 0 < self.height <= 65535):
             raise ValueError("uint16 event coordinates require width,height <= 65535")
-        for name in ("event_render_dt", "action_dt", "rgb_dt", "depth_dt"):
+        for name in ("event_render_dt", "action_dt", "rgb_dt", "depth_dt", "horizon_seconds"):
             self.ticks(getattr(self, name))
         if self.event_mode not in EVENT_MODES:
             raise ValueError(f"event_mode must be one of {EVENT_MODES}")
-        if self.event_mode == "accelerated" and self.ticks(self.keyframe_dt) % self.ticks(self.event_render_dt):
-            raise ValueError("keyframe_dt must be an integer multiple of event_render_dt")
+        if self.event_mode == "accelerated":
+            nk = self.ticks(self.keyframe_dt)
+            if nk % self.ticks(self.event_render_dt):
+                raise ValueError("keyframe_dt must be an integer multiple of event_render_dt")
+            for name in ("action_dt", "horizon_seconds", "bootstrap_seconds"):
+                if self.ticks(getattr(self, name)) % nk:
+                    raise ValueError(f"accelerated mode: {name}={getattr(self, name)} must be an integer multiple of "
+                                     f"keyframe_dt={self.keyframe_dt}, so every packet boundary is a keyframe")
         if self.event_backend != "evis":
             raise ValueError("only the EVIS backend is integrated")
         if self.event_source not in ("hdr", "ldr"):
             raise ValueError("event_source must be 'hdr' or 'ldr'")
         if self.observation_protocol not in PROTOCOLS:
             raise ValueError(f"observation_protocol must be one of {PROTOCOLS}")
+        if self.depth_observation_source not in ("none", "simulator"):
+            raise ValueError("depth_observation_source must be 'none' or 'simulator'")
         if self.observation_protocol == "events_rgbd_known_pose" and self.depth_observation_source == "none":
-            raise ValueError("events_rgbd_known_pose needs a declared depth_observation_source")
+            raise ValueError("events_rgbd_known_pose needs depth_observation_source='simulator'")
+        if self.depth_observation_source != "none" and self.observation_protocol not in ("events_rgbd_known_pose",
+                                                                                         "oracle"):
+            raise ValueError(f"depth_observation_source is set but protocol {self.observation_protocol!r} does not "
+                             "expose depth; use events_rgbd_known_pose or oracle")
+        if self.depth_noise_std_at_1m < 0 or not 0 <= self.depth_dropout < 1:
+            raise ValueError("depth_noise_std_at_1m must be >= 0 and depth_dropout in [0, 1)")
         if self.max_angular_speed * self.max_linear_speed >= self.max_linear_acceleration:
             raise ValueError("max_angular_speed*max_linear_speed must be below max_linear_acceleration, "
                              "otherwise a constant body twist violates the world-frame acceleration limit")

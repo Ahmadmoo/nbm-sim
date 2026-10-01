@@ -100,6 +100,11 @@ class EpisodeRecorder:
         rs = _append(self.obs, "rgb", pkt["rgb"].reshape(-1, H, W, 3), chunk_rows=1)
         _append(self.obs, "rgb_t", pkt["rgb_t"], chunk_rows=1024)
         _append(self.obs, "rgb_T_wc", pkt["rgb_T_wc"].reshape(-1, 4, 4), chunk_rows=1024)
+        dr = (0, 0)
+        if "depth_observed" in pkt:
+            dr = _append(self.obs, "depth_observed", pkt["depth_observed"], chunk_rows=1)
+            _append(self.obs, "depth_observed_t", pkt["depth_observed_t"], chunk_rows=1024)
+            _append(self.obs, "depth_observed_T_wc", pkt["depth_observed_T_wc"], chunk_rows=1024)
         first = 0 if pkt["phase"] == "reset" else 1
         ps = _append(self.traj, "pose_t", pkt["pose_t"][first:], chunk_rows=4096)
         _append(self.traj, "pose_T_wc", pkt["pose_T_wc"][first:], chunk_rows=4096)
@@ -110,7 +115,8 @@ class EpisodeRecorder:
                    requested_duration=[pkt["diagnostics"]["requested_duration"]],
                    command_limited=[pkt["command_limited"]], safety_intervention=[pkt["safety_intervention"]],
                    terminated=[pkt["terminated"]], truncated=[pkt["truncated"]],
-                   event_range=[es], rgb_range=[rs], pose_range=[(ps[0] - first, ps[1])])
+                   event_range=[es], rgb_range=[rs], pose_range=[(ps[0] - first, ps[1])], depth_observed_range=[dr],
+                   budget_clipped=[pkt["diagnostics"]["budget_clipped"]])
         for k, v in row.items():
             _append(s, k, np.asarray(v), chunk_rows=1024, compression=None)
         _append(s, "phase", np.array([pkt["phase"]], dtype=object).astype(_STR), chunk_rows=1024, compression=None)
@@ -170,7 +176,11 @@ def iter_packets(data):
         e0, e1 = s["event_range"][i]
         r0, r1 = s["rgb_range"][i]
         p0, p1 = s["pose_range"][i]
-        yield dict(step_index=int(s["step_index"][i]), phase=s["phase"][i].decode() if isinstance(s["phase"][i], bytes)
+        d0, d1 = s["depth_observed_range"][i] if "depth_observed_range" in s else (0, 0)
+        depth = {}
+        if "depth_observed" in o:
+            depth = dict(depth_observed=o["depth_observed"][d0:d1], depth_observed_t=o["depth_observed_t"][d0:d1])
+        yield dict(**depth, step_index=int(s["step_index"][i]), phase=s["phase"][i].decode() if isinstance(s["phase"][i], bytes)
                    else s["phase"][i], t_start=float(s["t_start"][i]), t_end=float(s["t_end"][i]),
                    events={k: o.get(f"events/{k}", np.zeros(0))[e0:e1] for k in ev_keys},
                    rgb=o["rgb"][r0:r1] if "rgb" in o else None, rgb_t=o.get("rgb_t", np.zeros(0))[r0:r1],

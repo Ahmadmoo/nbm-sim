@@ -50,11 +50,12 @@ class CameraNBMEnv:
         self.n_rgb = c.ticks(c.rgb_dt)
         self.n_depth = c.ticks(c.depth_dt)
         self.n_key = c.ticks(c.keyframe_dt) if c.event_mode == "accelerated" else None
+        self.horizon_ticks = c.ticks(c.horizon_seconds)
 
     def set_timing(self, **kw):
         """Change clock/limit settings between episodes (e.g. temporal-convergence tests)."""
         if not self._done:
-            raise RuntimeError("change timing only between episodes")
+            raise RuntimeError("change timing only between episodes: call save_episode() or end_episode() first")
         self.cfg = self.cfg.replace(**kw)
         self.motion = MotionController(self.cfg, self.spec.colliders(), self.spec.workspace(self.cfg))
         self.events.cfg = self.cfg
@@ -75,7 +76,7 @@ class CameraNBMEnv:
         seed = self.cfg.seed if seed is None else int(seed)
         self.seed = seed
         ss = np.random.SeedSequence(seed)
-        streams = dict(zip(("scene", "sensor_noise", "bootstrap", "baseline", "policy"), ss.spawn(5)))
+        streams = dict(zip(("scene", "sensor_noise", "bootstrap", "baseline", "policy", "depth_noise"), ss.spawn(6)))
         self.rng = {k: np.random.default_rng(s) for k, s in streams.items()}
         self._rng_seeds = streams
         if self.recorder is not None:
@@ -93,6 +94,7 @@ class CameraNBMEnv:
         self.timing = dict(render=0.0, events=0.0, record=0.0, step_wall=0.0)
         self.counts = dict(events_pos=0, events_neg=0, rgb=0, depth=0, captures=0)
         self._last_key = None
+        self._last_key_tick = None
         self._last_eval = None
 
         for _ in range(self.cfg.warmup_renders):
@@ -109,7 +111,7 @@ class CameraNBMEnv:
         self._done = False
         pkt = self._packet(t_start=0.0, T_start=T0, pose_t=[0.0], pose_T=[T0], twists=[], rgb=first["rgb_list"],
                            requested=np.zeros(6), limited=False, safety=False, events=concat_events([]),
-                           phase="reset")
+                           phase="reset", depth_obs=self._depth_observed([first["eval"]]))
         self._emit(pkt, first["eval"])
         return self._public(pkt)
 
@@ -124,9 +126,15 @@ class CameraNBMEnv:
         v = np.asarray(velocity, dtype=np.float64)
         if v.shape != (6,) or not np.all(np.isfinite(v)):
             raise ValueError("velocity must be a finite array of shape (6,)")
-        n = self.cfg.ticks(self.cfg.action_dt if duration is None else float(duration))
-        if phase == "policy" and self.cfg.event_mode == "accelerated" and self.tick % self.n_key:
-            raise RuntimeError("accelerated mode requires steps to start on keyframe ticks")
+        n_req = self.cfg.ticks(self.cfg.action_dt if duration is None else float(duration))
+        if self.n_key is not None and (n_req % self.n_key or self.tick % self.n_key):
+            raise ValueError(f"accelerated mode: step durations must be multiples of keyframe_dt="
+                             f"{self.cfg.keyframe_dt} s so every packet boundary is a keyframe")
+        if phase == "bootstrap" and self.policy_steps:
+            raise RuntimeError("bootstrap steps must come before the first policy step")
+        n = n_req
+        if phase == "policy":
+            n = min(n_req, self.horizon_ticks - (self.tick - self.bootstrap_ticks))   # stop at the remaining budget
         limited_cmd, was_limited = self.motion.limit(v)
         t_start, T_start = self.tick * self.dt, self.motion.T_wc.copy()
         pose_t, pose_T, twists, rgb, evals = [t_start], [T_start], [], [], []
@@ -137,6 +145,9 @@ class CameraNBMEnv:
                 self.motion.emergency_stop()
                 safety, self.terminated, self.reason = True, True, res.reason
                 self.stop_time = self.tick * self.dt
+                if self.n_key is not None and self.tick != self._last_key_tick:
+                    # close the open keyframe gap at the stop pose so no rendered interval is dropped
+                    self._capture(self.motion.T_wc, self.tick, events=True, rgb=False, depth=False)
                 break
             self.tick += 1
             pose_t.append(self.tick * self.dt)
@@ -154,14 +165,12 @@ class CameraNBMEnv:
             self.bootstrap_ticks = self.tick
         else:
             self.policy_steps += 1
-        if not self.terminated:
-            planning_time = (self.tick - self.bootstrap_ticks) * self.dt
-            if phase == "policy" and (self.policy_steps >= self.cfg.max_steps or
-                                      planning_time >= self.cfg.horizon_seconds - 1e-9):
-                self.truncated, self.reason = True, "budget_exhausted"
+        if not self.terminated and phase == "policy" and (
+                self.policy_steps >= self.cfg.max_steps or self.tick - self.bootstrap_ticks >= self.horizon_ticks):
+            self.truncated, self.reason = True, "budget_exhausted"
         pkt = self._packet(t_start=t_start, T_start=T_start, pose_t=pose_t, pose_T=pose_T, twists=twists, rgb=rgb,
                            requested=v, limited=was_limited, safety=safety, events=events, phase=phase,
-                           duration=n * self.dt)
+                           duration=n_req * self.dt, budget_clipped=n < n_req, depth_obs=self._depth_observed(evals))
         self.timing["step_wall"] += time.perf_counter() - w0
         self._emit(pkt, evals)
         if self.terminated or self.truncated:
@@ -185,6 +194,8 @@ class CameraNBMEnv:
         accel = self.cfg.event_mode == "accelerated"
         if events:
             ch |= {"hdr"} | ({"mv", "depth_t"} if accel else set())
+        if events and accel and tick % self.n_key and not self.terminated:
+            raise RuntimeError(f"internal: keyframe capture at non-keyframe tick {tick}")
         if rgb:
             ch.add("rgb")
         if depth:
@@ -203,11 +214,13 @@ class CameraNBMEnv:
             if not accel or self._last_key is None:
                 self.events.process(f, t)
             else:
-                k = self.n_key // self.n_event
+                gap = tick - self._last_key_tick
+                k = max(1, round(gap / self.n_event))
                 self.events.warp_gap(self._last_key, dict(hdr=f, mv=out["mv"], depth_t=out["depth_t"]),
-                                     (tick - self.n_key) * self.dt, self.n_event * self.dt, k)
+                                     self._last_key_tick * self.dt, t, k)
             if accel:
                 self._last_key = dict(hdr=f, mv=out["mv"], depth_t=out["depth_t"])
+                self._last_key_tick = tick
             self.timing["events"] += time.perf_counter() - t1
             self._last_intensity = f
         rgb_list = [(t, T.copy(), out["rgb"])] if rgb else []
@@ -220,8 +233,28 @@ class CameraNBMEnv:
         return dict(rgb_list=rgb_list, eval=ev)
 
     # ---------- packets ----------
+    def _depth_observed(self, evals):
+        """Co-located simulated depth sensor (``depth_observation_source='simulator'``) at ``depth_dt``:
+        GT depth plus declared noise ``k*Z^2`` and dropout. Separate from evaluator ``depth_gt``."""
+        if self.cfg.depth_observation_source == "none":
+            return None
+        rng, k, drop = self.rng["depth_noise"], self.cfg.depth_noise_std_at_1m, self.cfg.depth_dropout
+        out = []
+        for ev in evals:
+            if ev is None:
+                continue
+            z, valid = ev["depth"].astype(np.float32).copy(), ev["depth_valid"].copy()
+            if k > 0:
+                z[valid] += (rng.standard_normal(int(valid.sum())) * k * z[valid] ** 2).astype(np.float32)
+                valid &= z > 0
+            if drop > 0:
+                valid &= rng.random(z.shape) >= drop
+            z[~valid] = np.nan
+            out.append((ev["t"], ev["T_wc"].copy(), z))
+        return out
+
     def _packet(self, t_start, T_start, pose_t, pose_T, twists, rgb, requested, limited, safety, events, phase,
-                duration=0.0):
+                duration=0.0, budget_clipped=False, depth_obs=None):
         H, W = self.cfg.height, self.cfg.width
         npos = int((events["p"] > 0).sum())
         self.counts["events_pos"] += npos
@@ -240,9 +273,16 @@ class CameraNBMEnv:
             command_limited=bool(limited), safety_intervention=bool(safety),
             terminated=bool(self.terminated), truncated=bool(self.truncated), reason=self.reason,
             diagnostics=dict(n_events=len(events["t"]), n_pos=npos, requested_duration=float(duration),
+                             budget_clipped=bool(budget_clipped),
                              executed_duration=float(pose_t[-1] - t_start), path_length=self.motion.path_length,
                              rotation_travel=self.motion.rotation_travel, acquisition_time=self.tick * self.dt,
                              policy_steps=self.policy_steps))
+        if depth_obs is not None:
+            pkt["depth_observed"] = frozen(np.stack([d[2] for d in depth_obs]) if depth_obs
+                                           else np.zeros((0, H, W), np.float32))
+            pkt["depth_observed_t"] = frozen(np.array([d[0] for d in depth_obs], np.float64))
+            pkt["depth_observed_T_wc"] = frozen(np.stack([d[1] for d in depth_obs]) if depth_obs
+                                                else np.zeros((0, 4, 4)))
         if self.cfg.expose_intensity and getattr(self, "_last_intensity", None) is not None:
             f = self._last_intensity[0].detach().cpu().numpy()
             pkt["intensity"] = frozen((f[..., :3] @ np.array([0.2126, 0.7152, 0.0722])).astype(np.float32))
@@ -274,6 +314,8 @@ class CameraNBMEnv:
         return dict(tick=self.tick, policy_steps=self.policy_steps, step_index=self.step_index,
                     bootstrap_ticks=self.bootstrap_ticks, terminated=self.terminated, truncated=self.truncated,
                     reason=self.reason, motion=self.motion.get_state(), events=self.events.get_state(),
+                    last_key_tick=self._last_key_tick,
+                    last_key=None if self._last_key is None else {k: v.clone() for k, v in self._last_key.items()},
                     rng={k: r.bit_generator.state for k, r in self.rng.items()},
                     limitations="renderer history is not captured; restore re-renders from the restored pose")
 
@@ -283,6 +325,8 @@ class CameraNBMEnv:
         self.terminated, self.truncated, self.reason = s["terminated"], s["truncated"], s["reason"]
         self.motion.set_state(s["motion"])
         self.events.set_state(s["events"])
+        self._last_key_tick = s["last_key_tick"]
+        self._last_key = None if s["last_key"] is None else {k: v.clone() for k, v in s["last_key"].items()}
         for k, st in s["rng"].items():
             self.rng[k].bit_generator.state = st
         self._done = self.terminated or self.truncated
@@ -292,11 +336,20 @@ class CameraNBMEnv:
                     assets=self.assets, scene=self.spec.scene_id)
 
     def save_episode(self, output_dir=None):
+        """Write the episode and end it. Further ``step`` calls need a new ``reset``."""
         if self.recorder is None:
             raise RuntimeError("recording is disabled (record=False) or no episode is active")
         path = self.recorder.close("complete", output_dir)
         self.recorder = None
+        self._done = True
         return path
+
+    def end_episode(self):
+        """End the episode without saving (recording, if any, is closed with status 'ended_unsaved')."""
+        if self.recorder is not None:
+            self.recorder.close("ended_unsaved")
+            self.recorder = None
+        self._done = True
 
     def close(self):
         if self.recorder is not None:

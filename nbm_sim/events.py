@@ -98,18 +98,20 @@ class EvisEventCamera:
         self.proc(frame, float(t))
         self.initialized = True
 
-    def warp_gap(self, prev, cur, t0, dt_fine, k):
-        """Accelerated mode: EVIS motion-vector warp of keyframe gap ``prev -> cur``.
+    def warp_gap(self, prev, cur, t0, t1, k):
+        """Accelerated mode: EVIS motion-vector warp of keyframe gap ``prev -> cur`` over ``(t0, t1]``.
 
-        Feeds the K-1 synthesized frames at ``t0 + i*dt_fine`` and then the real keyframe ``cur``
-        at ``t0 + k*dt_fine``, so every event of the gap lands inside ``(t0, t1]``.
+        Feeds the K-1 synthesized frames at ``t0 + i*(t1-t0)/k`` and then the real keyframe ``cur``
+        at exactly ``t1``, so every event of the gap lands inside ``(t0, t1]``.
         """
         from dvs_gen.warp import bidir_warp_gap
-        mids = bidir_warp_gap(prev["hdr"], cur["hdr"], prev["mv"], cur["mv"], k, self.cfg.warp_composite,
-                              depthA=prev["depth_t"], depthB=cur["depth_t"], mv_dilate=self.cfg.warp_mv_dilate)
-        for i, f in enumerate(mids):
-            self.proc(f, float(t0 + (i + 1) * dt_fine))
-        self.proc(cur["hdr"], float(t0 + k * dt_fine))
+        dt_fine = (t1 - t0) / k
+        if k > 1:
+            mids = bidir_warp_gap(prev["hdr"], cur["hdr"], prev["mv"], cur["mv"], k, self.cfg.warp_composite,
+                                  depthA=prev["depth_t"], depthB=cur["depth_t"], mv_dilate=self.cfg.warp_mv_dilate)
+            for i, f in enumerate(mids):
+                self.proc(f, float(t0 + (i + 1) * dt_fine))
+        self.proc(cur["hdr"], float(t1))
 
     def drain(self):
         return self.sink.drain()
