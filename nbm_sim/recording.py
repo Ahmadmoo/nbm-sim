@@ -168,6 +168,10 @@ def load_episode(run_dir):
     return data
 
 
+def _str(v):
+    return v.decode() if isinstance(v, bytes) else str(v)
+
+
 def iter_packets(data):
     """Rebuild per-step observation packets from a loaded episode."""
     o, s, tr = data["obs"], data["steps"], data["traj"]
@@ -177,15 +181,22 @@ def iter_packets(data):
         r0, r1 = s["rgb_range"][i]
         p0, p1 = s["pose_range"][i]
         d0, d1 = s["depth_observed_range"][i] if "depth_observed_range" in s else (0, 0)
-        depth = {}
-        if "depth_observed" in o:
-            depth = dict(depth_observed=o["depth_observed"][d0:d1], depth_observed_t=o["depth_observed_t"][d0:d1])
-        yield dict(**depth, step_index=int(s["step_index"][i]), phase=s["phase"][i].decode() if isinstance(s["phase"][i], bytes)
-                   else s["phase"][i], t_start=float(s["t_start"][i]), t_end=float(s["t_end"][i]),
+        pkt = dict(step_index=int(s["step_index"][i]), phase=_str(s["phase"][i]), reason=_str(s["reason"][i]),
+                   t_start=float(s["t_start"][i]), t_end=float(s["t_end"][i]),
                    events={k: o.get(f"events/{k}", np.zeros(0))[e0:e1] for k in ev_keys},
                    rgb=o["rgb"][r0:r1] if "rgb" in o else None, rgb_t=o.get("rgb_t", np.zeros(0))[r0:r1],
+                   rgb_T_wc=o.get("rgb_T_wc", np.zeros((0, 4, 4)))[r0:r1],
                    pose_t=tr["pose_t"][p0:p1], pose_T_wc=tr["pose_T_wc"][p0:p1],
-                   requested_velocity=s["requested_velocity"][i], requested_duration=float(s["requested_duration"][i]))
+                   T_wc_start=tr["pose_T_wc"][p0], T_wc_end=tr["pose_T_wc"][p1 - 1],
+                   executed_twist=tr.get("executed_twist", np.zeros((0, 6)))[p0:p1 - 1],
+                   requested_velocity=s["requested_velocity"][i], requested_duration=float(s["requested_duration"][i]),
+                   command_limited=bool(s["command_limited"][i]), safety_intervention=bool(s["safety_intervention"][i]),
+                   terminated=bool(s["terminated"][i]), truncated=bool(s["truncated"][i]),
+                   budget_clipped=bool(s["budget_clipped"][i]) if "budget_clipped" in s else False)
+        if "depth_observed" in o:
+            pkt.update(depth_observed=o["depth_observed"][d0:d1], depth_observed_t=o["depth_observed_t"][d0:d1],
+                       depth_observed_T_wc=o["depth_observed_T_wc"][d0:d1])
+        yield pkt
 
 
 def command_schedule(data):

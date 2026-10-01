@@ -127,6 +127,7 @@ Packet fields follow spec §11.2. Arrays are read-only copies. `actor_view` remo
 | Intrinsics | Pixel-center convention, `cx = (W−1)/2`. Isaac stores `W/2` (edge convention); the adapter converts |
 | USD camera | `R_gl = R_wc · diag(1, −1, −1)`, set with `convention="opengl"` and checked by reading back `quat_w_ros`. On 3.0 the readback is written through by `set_world_poses`, so it checks the conversion math only; the latency check in `acceptance_plane.py` checks what was rendered |
 | Depth | `distance_to_image_plane`; invalid values → `NaN`, `depth_valid = False` |
+| Clock | Episode time is the env's integer base-tick counter. Isaac's physics dt is kept equal to `base_dt` (also after `set_timing`) and is read back into the manifest. Isaac's own `current_time` is not episode time: it advances once per capture and per warm-up render. For the static scenes here, this has no effect on any output |
 
 **Acceleration limits** act on world-frame velocity between tick endpoints. Inside a tick the body twist is
 constant, so world linear velocity turns by `|ω||v|dt`. That turning is subtracted from the linear slew budget.

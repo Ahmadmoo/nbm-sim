@@ -154,3 +154,32 @@ def test_rgbd_recording_roundtrip(make_env):
                            depth_noise_std_at_1m=0.01, horizon_seconds=0.1), run)
     assert np.array_equal(again[1]["depth_observed"], live[0]["depth_observed"], equal_nan=True)
     assert compare_event_streams(concat_events([p["events"] for p in again]), live[0]["events"])["identical"]
+
+
+# 5. second review: backend clock and full packet rebuild
+def test_set_timing_updates_backend_dt(make_env):
+    env = make_env(record=False)
+    assert env.backend.dt == env.cfg.base_dt
+    env.reset()
+    env.end_episode()
+    env.set_timing(base_dt=0.00025, event_render_dt=0.00025)
+    assert env.backend.dt == 0.00025 == env.dt
+
+
+def test_replay_rebuilds_all_packet_fields(make_env):
+    kw = dict(observation_protocol="events_rgbd_known_pose", depth_observation_source="simulator",
+              depth_noise_std_at_1m=0.01, max_steps=3)
+    env = make_env(**kw)
+    live = [env.reset(seed=3)] + env.run_bootstrap([(np.array([0.1, 0, 0, 0, 0.1, 0]), 0.05)] * 2)
+    live += [env.step(np.array([0.05, 0.05, 0, 0, 0, 0.2])) for _ in range(3)]
+    rec = list(iter_packets(load_episode(env.save_episode())))
+    assert len(rec) == len(live)
+    keys = ("t_start", "t_end", "rgb", "rgb_t", "rgb_T_wc", "pose_t", "pose_T_wc", "T_wc_start", "T_wc_end",
+            "executed_twist", "requested_velocity", "command_limited", "safety_intervention", "terminated",
+            "truncated", "reason", "phase", "step_index", "depth_observed", "depth_observed_t", "depth_observed_T_wc")
+    for a, b in zip(live, rec):
+        for k in keys:
+            x, y = np.asarray(a[k]), np.asarray(b[k])
+            assert np.array_equal(x, y, equal_nan=x.dtype.kind == "f"), k
+        assert compare_event_streams(a["events"], b["events"])["identical"]
+    assert rec[-1]["truncated"] and rec[-1]["reason"] == "budget_exhausted"

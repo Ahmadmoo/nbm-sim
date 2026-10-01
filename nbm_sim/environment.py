@@ -56,7 +56,10 @@ class CameraNBMEnv:
         """Change clock/limit settings between episodes (e.g. temporal-convergence tests)."""
         if not self._done:
             raise RuntimeError("change timing only between episodes: call save_episode() or end_episode() first")
-        self.cfg = self.cfg.replace(**kw)
+        cfg = self.cfg.replace(**kw)
+        if cfg.base_dt != self.cfg.base_dt:
+            self.backend.set_dt(cfg.base_dt)
+        self.cfg = cfg
         self.motion = MotionController(self.cfg, self.spec.colliders(), self.spec.workspace(self.cfg))
         self.events.cfg = self.cfg
         self._set_clock()

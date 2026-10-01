@@ -97,7 +97,7 @@ class IsaacCameraBackend:
 
         self.cfg = cfg
         self.compat = IsaacCompat(cfg)
-        self.sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=cfg.event_render_dt, render_interval=1,
+        self.sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=cfg.base_dt, render_interval=1,
                                                                         device=cfg.device))
         spawn_scene(spec, asset_table, self.compat.quat_order)
         types = ["rgb", "distance_to_image_plane", "semantic_segmentation"]
@@ -165,6 +165,29 @@ class IsaacCameraBackend:
                                                  "/rtx/rtpt/cached/enabled", "/rtx/rtpt/lightcache/cached/enabled",
                                                  "/rtx-transient/dldenoiser/enabled"]
         return {k: s.get(k) for k in keys}
+
+    def set_dt(self, dt):
+        """Keep Isaac's physics step equal to the env base tick (called by ``CameraNBMEnv.set_timing``).
+
+        The scene is static and every timestamp comes from the env tick counter, so this keeps the two
+        clocks in the same units; Isaac's own ``current_time`` still is not episode time (it advances once
+        per capture and per warm-up render).
+        """
+        if self.compat.major >= 3:
+            # 3.x has no public setter; PhysxManager.step() reads sim.cfg.dt on every call
+            self.sim.cfg.dt = dt
+            prim = self.sim.stage.GetPrimAtPath(self.sim.cfg.physics_prim_path)
+            attr = prim.GetAttribute("physxScene:timeStepsPerSecond") if prim.IsValid() else None
+            if attr:
+                attr.Set(int(round(1.0 / dt)))
+            self.sim.set_setting("/persistent/simulation/minFrameRate", int(round(1.0 / dt)))
+        else:
+            self.sim.set_simulation_dt(physics_dt=dt, rendering_dt=dt * self.sim.cfg.render_interval)
+            self.sim.cfg.dt = dt
+        got = float(self.sim.get_physics_dt())
+        if abs(got - dt) > 1e-12:
+            raise RuntimeError(f"Isaac physics dt is {got}, expected {dt}")
+        return got
 
     def _set_viewport(self, spec):
         if not self.cfg.display:
@@ -263,6 +286,8 @@ class IsaacCameraBackend:
                     hdr_channel=self.compat.hdr_channel, data_types=self.data_types,
                     render_settings=self.render_settings, renders_per_capture=self.cfg.renders_per_capture,
                     K_effective=self.K.tolist(), optical_to_gl=OPTICAL_TO_GL.tolist(),
+                    isaac_physics_dt=float(self.sim.get_physics_dt()),
+                    clock="episode time = env base ticks; Isaac physics dt = base_dt; Isaac current_time unused",
                     depth_semantics="distance_to_image_plane (camera-forward Z); invalid -> NaN",
                     physics="static scene; physics steps do not change scene state")
 

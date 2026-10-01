@@ -12,6 +12,11 @@ class PlaneBackend:
         u, v = np.meshgrid(np.arange(cfg.width), np.arange(cfg.height))
         self.rays = np.stack([u, v, np.ones_like(u)], -1).astype(np.float64) @ np.linalg.inv(self.K).T
         self.captures = []
+        self.dt = cfg.base_dt
+
+    def set_dt(self, dt):
+        self.dt = dt
+        return dt
 
     def _texture(self, x, z):
         return 0.15 + 0.35 * (1 + np.sin(9.0 * x) * np.cos(7.0 * z)) + 0.1 * np.sin(31.0 * x + 17.0 * z)
