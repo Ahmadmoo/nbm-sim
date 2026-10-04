@@ -27,7 +27,7 @@ class CameraNBMEnv:
         if backend is None:
             from .camera import IsaacCameraBackend, launch_app
             launch_app(self.cfg)
-            self.assets = build_assets(self.spec, self.cfg.asset_dir, self.cfg.texture_seed)
+            self.assets = build_assets(self.spec, self.cfg.asset_dir, self.cfg.texture_seed, self.cfg.texture_style)
             backend = IsaacCameraBackend(self.cfg, self.spec, self.assets)
         else:
             self.assets = []
@@ -39,6 +39,7 @@ class CameraNBMEnv:
         self.events = EvisEventCamera(self.cfg)
         self.recorder = None
         self.episode_id = None
+        self._last_eval = None
         self._done = True
         self._set_clock()
 

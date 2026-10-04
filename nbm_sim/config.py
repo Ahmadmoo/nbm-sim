@@ -84,6 +84,7 @@ class SimConfig:
     allow_untested_isaac: bool = False
     pose_readback_tol: float = 1e-4
     texture_seed: int = 7
+    texture_style: str = "noise"                  # "noise" (smooth) or "edges" (sharp rectangles; for ray voting)
 
     @property
     def K(self) -> np.ndarray:
@@ -140,6 +141,8 @@ class SimConfig:
             raise ValueError("invalid workspace bounds")
         if self.isaac_quat_order not in ("auto", "wxyz", "xyzw"):
             raise ValueError("isaac_quat_order must be auto, wxyz or xyzw")
+        if self.texture_style not in ("noise", "edges"):
+            raise ValueError("texture_style must be 'noise' or 'edges'")
         if self.renders_per_capture < 1:
             raise ValueError("renders_per_capture must be >= 1")
         return self

@@ -184,6 +184,11 @@ the real keyframe at the end of each gap, so events never cross packet boundarie
 | `nbm_sim/baselines.py` | Bootstrap scan, orbit, scan, bounded random |
 | `nbm_sim/interfaces.py` | Research-module protocols |
 | `experiment.py` | First fixed-trajectory demo |
+| `nbm_sim/voting.py` | Option C in-loop map: ray-voting volume (§9) |
+| `nbm_sim/primitives.py` | Option C action set: motion primitives |
+| `nbm_sim/planner.py` | Option C observability score, planner, oracle branching |
+| `nbm_sim/gpert_io.py` | Export to GPERT, run it, read its Gaussians back |
+| `experiment_option_c.py`, `experiment_branch.py` | Option C loop; score-vs-real-gain check |
 | `tests/` | Pure test suite; `tests/isaac/` holds the Isaac acceptance scripts |
 
 ---
@@ -201,3 +206,62 @@ the real keyframe at the end of each gap, so events never cross packet boundarie
 | Depth sensor model | `depth_observed` noise/dropout is a simple declared model, not a calibrated sensor |
 | Noise | Off by default. `get_state()` with noise enabled deep-copies the noise model's torch generator, which is untested |
 | `num_envs` | 1 |
+
+---
+
+## 9. Option C: fast map in the loop, GPERT offline
+
+Branch `option-c-voting-planner`. The planner decides on a fast, deterministic map. GPERT
+([e3ai/gpert](https://github.com/e3ai/gpert), CVPR 2026) is used only to score the final stacked
+event stream.
+
+### 9.1 Parts
+
+| Part | What it does |
+|---|---|
+| `VotingVolume` | Every event casts a ray from its exact pose. Rays vote into a world voxel grid around the target. Integer counters, so updates are order-independent and repeatable. Per voxel: vote count, sum of ray directions (gives the angle spread), frustum count |
+| Points | EMVS-style: from keyframe reference views, each pixel ray takes its best-voted voxel; pixels above a global ratio and their local mean are kept |
+| Voxel states | `unobserved`, `seen`, `edge_unsure` (angle spread < `min_angle_deg`), `edge_known` |
+| Edge direction | Local PCA of point voxels, with offsets projected perpendicular to the viewing direction |
+| Primitives | 18 by default: 8 orbits, 4 slides, approach, retreat, 4 rotations. All last 1 s and start and end at rest. Built from the current pose and the declared target-center prior |
+| Score | For each `edge_unsure` voxel: increase in angle spread if the candidate path adds rays where the voxel stays visible and its image motion crosses its edge (|sin| of the angle between them) |
+| `branch_gains` | Oracle: runs every primitive for real from the current state, measures the true gain, restores the state; nothing is recorded |
+| `gpert_io` | Writes GPERT's three npz files (events, xyzw poses, calibration) and a config, runs GPERT as a subprocess, reads `export_last.ply` |
+
+### 9.2 Run
+
+```bash
+python experiment_option_c.py     # start primitive + planned primitives, saves run + GPERT input
+python experiment_branch.py       # score vs real gain per start state (EVALUATOR="volume" or "gpert")
+# final GPERT score, in GPERT's own environment:
+cd ../gpert && python scripts/run.py --config <run_dir>/gpert/config.yaml
+```
+
+`experiment_branch.py` writes the Spearman correlation between predicted scores and true gains, plus the
+spread of true gains. If the spread is no larger than GPERT's run-to-run noise (same stream, several runs),
+the choice of motion does not matter for that setup.
+
+### 9.3 What was checked here (test backend, no Isaac)
+
+| Check | Result |
+|---|---|
+| Event rays vs. plane geometry | Rays hit the true edges within 0.1 mm |
+| Vote peak at a single edge | On the edge, at the true depth (±1 voxel) |
+| Incremental vs. batch, repeat runs | Bit-identical votes and direction sums |
+| Points on an edge-textured plane, ~0.3 m baseline | Median depth within 1.5 cm; share within 3 voxels rises with baseline |
+| Score on a vertical edge | Horizontal motion scores 7× higher than vertical |
+| Branching | State, recorder and volume are unchanged afterwards |
+| GPERT export | Parsed by GPERT's own `Config` and data loader; poses match |
+
+### 9.4 Limits
+
+| Item | Note |
+|---|---|
+| Smooth texture | Ray voting finds no peak on smooth texture. Option C needs `texture_style="edges"` (random rectangles on the cube). The default `"noise"` texture stays for other uses |
+| Depth precision | About voxel × depth / baseline. Short paths give wide, flat vote profiles, which is what `edge_unsure` marks |
+| Occlusion | Not modeled in the score or in the frustum count. Back-side voxels can count as visible |
+| Brightness gradient | Not modeled; the score uses edge orientation only |
+| Voxel grid size | 2 mm over the cube region is about 2.7M voxels (~100 MB on GPU) |
+| GPERT | Not run here (needs CUDA + OptiX). Its warp model puts the principal point at W/2; nbm-sim uses (W−1)/2, a 0.5 px difference |
+| Isaac side | Not run here; same status as the rest of the repo |
+

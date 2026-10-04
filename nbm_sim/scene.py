@@ -162,8 +162,26 @@ def evaluation_geometry(spec: SceneSpec, spacing=0.001):
 
 # ---------- texture and USD asset generation ----------
 
-def make_texture(seed, size=(1024, 1536)):
-    """Deterministic multi-scale smooth-noise RGB atlas (uint8, H x W x 3)."""
+def make_edge_texture(seed, size=(1024, 1536), n_rects=180):
+    """Deterministic atlas of random overlapping rectangles: sharp edges in many places and two
+    orientations per face (needed by ray voting; EMVS-style methods find no peak on smooth texture)."""
+    rng = np.random.default_rng(seed)
+    H, W = size
+    img = np.full((H, W, 3), 0.45)
+    for _ in range(n_rects):
+        h, w = rng.integers(H // 40, H // 6), rng.integers(W // 60, W // 9)
+        y, x = rng.integers(0, H - h), rng.integers(0, W - w)
+        img[y:y + h, x:x + w] = np.clip(img[y:y + h, x:x + w] + rng.uniform(-0.35, 0.35), 0.0, 1.0)
+    return (np.clip(0.08 + 0.84 * img, 0, 1) * 255).astype(np.uint8)
+
+
+def make_texture(seed, size=(1024, 1536), style="noise"):
+    """Deterministic RGB atlas (uint8, H x W x 3): ``noise`` = multi-scale smooth noise,
+    ``edges`` = random rectangles (see ``make_edge_texture``)."""
+    if style == "edges":
+        return make_edge_texture(seed, size)
+    if style != "noise":
+        raise ValueError(f"unknown texture style {style!r}")
     rng = np.random.default_rng(seed)
     H, W = size
     img = np.zeros((H, W, 3))
@@ -235,7 +253,7 @@ def write_textured_box_usd(path, size, texture_png):
     stage.GetRootLayer().Save()
 
 
-def build_assets(spec: SceneSpec, asset_dir, texture_seed):
+def build_assets(spec: SceneSpec, asset_dir, texture_seed, texture_style="noise"):
     """Write texture + USD for every textured box; return the asset table (spec §4.2)."""
     from PIL import Image
 
@@ -245,9 +263,9 @@ def build_assets(spec: SceneSpec, asset_dir, texture_seed):
     for i, b in enumerate(spec.boxes):
         if not b.textured:
             continue
-        png = d / f"{b.name}_texture_seed{texture_seed + i}.png"
-        Image.fromarray(make_texture(texture_seed + i)).save(png)
-        usd = d / f"{b.name}.usda"
+        png = d / f"{b.name}_texture_{texture_style}_seed{texture_seed + i}.png"
+        Image.fromarray(make_texture(texture_seed + i, style=texture_style)).save(png)
+        usd = d / f"{b.name}_{texture_style}.usda"
         write_textured_box_usd(usd, b.size, png)
         table.append(dict(id=b.name, path=str(usd.resolve()), sha256=sha256(usd), texture=str(png.resolve()),
                           texture_sha256=sha256(png), units="m", scale=[1, 1, 1], translation=list(b.center),
